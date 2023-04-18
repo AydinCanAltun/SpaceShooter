@@ -13,8 +13,13 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 SevSeg sevseg;
 #define POTENTIOMETER_PIN A3
 #define BUZZER_PIN 53
-const byte buttonPins[] = {A0, A1, A2}; // 2 -> Sol, 3-> Sağ, 4 -> Aksiyon Al(Seç, Ateş Et)
+#define LDR_PIN A0
+// LDR Characteristics
+const float GAMMA = 0.7;
+const float RL10 = 50;
+const byte buttonPins[] = {A4, A1, A2}; // 2 -> Sol, 3-> Sağ, 4 -> Aksiyon Al(Seç, Ateş Et)
 const byte gunPins[] = {22, 23, 24};
+const byte healthPins[] = {38, 39, 40};
 const byte digitPins[] = {2, 3, 4, 5};
 const byte segmentPins[] = {6, 7, 8, 9, 10, 11, 12, 13};
 byte selectedMenuItem = 0; // 0 -> Kolay, 1 -> Zor
@@ -23,6 +28,7 @@ byte remainingGun;
 byte playerPosition;
 bool isTakeDamage;
 bool isFirstAction;
+bool isInverted;
 /*
 Gemi -> >= 6 (6 + Toplam Canı)
 Bonus -> == 5
@@ -48,24 +54,48 @@ bool shootButtonClicked;
 unsigned long gameTime;
 unsigned long damageTakenTime;
 uint8_t playerScore;
+int ldrValue;
+double moveObstacleMiliseconds;
+double untouchableMiliseconds;
+unsigned long gameStartTime;
 
 void setup() {
   Serial.begin(115200);
+  // OLED Başlatılıyor
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)){
     Serial.println(F("SSD1306 allocation failed"));
     for(;;);
   }
-  sevseg.begin(COMMON_ANODE, 4, digitPins, segmentPins, false, false, true, true);
+  // 7-Segment Display Başlatılıyor
+  byte numDigits = 4;
+  bool resistorsOnSegments = false; // 'false' means resistors are on digit pins
+  byte hardwareConfig = COMMON_ANODE; // See README.md for options
+  bool updateWithDelays = false; // Default 'false' is Recommended
+  bool leadingZeros = true; // Use 'true' if you'd like to keep the leading zeros
+  bool disableDecPoint = true; // Use 'true' if your decimal point doesn't exist or isn't connected
+  sevseg.begin(hardwareConfig, numDigits, digitPins, segmentPins, resistorsOnSegments, updateWithDelays, leadingZeros, disableDecPoint);
   sevseg.setBrightness(90);
+  sevseg.setNumber(0, 4);
+  // Push Buttonlar INPUT_PULLUP olarak ayarlanıyor.
   for(byte i=0; i<3; i++){
     pinMode(buttonPins[i], INPUT_PULLUP);
   }
+  // Silah pinleri ayarlanıyor
   for(byte i=0; i<3; i++){
     pinMode(gunPins[i], OUTPUT);
     digitalWrite(gunPins[i], LOW);
   }
+  for(byte i=0; i<3; i++){
+    pinMode(healthPins[i], OUTPUT);
+    digitalWrite(healthPins[i], LOW);
+  }
+  // Potansiyemetre ayarlanıyor
   pinMode(POTENTIOMETER_PIN, INPUT);
+  // Buzzer ayarlanıyor
   pinMode(BUZZER_PIN, OUTPUT);
+  // LDR ayarlanıyor
+  pinMode(LDR_PIN, INPUT);
+  isInverted = false;
   delay(1000);
 }
 
@@ -75,7 +105,7 @@ void loop() {
     menu();
     byte clickedButton = takenAction();
     if(!isFirstAction){
-      if(clickedButton == A0 || clickedButton == A1){
+      if(clickedButton == A4 || clickedButton == A1){
         selectedMenuItem = selectedMenuItem == 0 ? 1 : 0;
       }else if(clickedButton == A2){
         isGameStarted = true;
@@ -83,16 +113,23 @@ void loop() {
     }else{
       isFirstAction = false;
     }
-    
+    delay(100);
   }else{
+    if(selectedMenuItem == 0){
+      Serial.println("Easy Mode");
+    }else{
+      Serial.println("Hard Mode");
+    }
     setGameDefaults();
     while(true){
+      sevseg.refreshDisplay();
       if(isGameOver()){
         isGameStarted = false;
         drawGameOver();
         display.display();
         remainingGun = 0;
         showRemainigGun();
+        showRemainingHealth();
         byte clickedButton = takenAction();
         isFirstAction = true;
         break;
@@ -104,13 +141,14 @@ void loop() {
         randomObstacleCount = 0;
       }
       if(isTakeDamage){
-        if(millis() - damageTakenTime >= 3000){
+        if(millis() - damageTakenTime >= untouchableMiliseconds){
           isTakeDamage = false;
         }
       }
       movePlayer();
       showRemainigGun();
-      if(millis() - gameTime >= 1000){
+      showRemainingHealth();
+      if(millis() - gameTime >= moveObstacleMiliseconds){
         moveObstacles();
         createRandomObstacle();
         gameTime = millis();
@@ -120,14 +158,42 @@ void loop() {
       if(digitalRead(A2) == LOW && !isFirstAction){
         shoot();
       }
+      if(analogRead(A0) != ldrValue){
+        ldrValue = analogRead(A0);
+        float voltage = ldrValue / 1024. * 5;
+        float resistance = 2000 * voltage / (1-voltage / 5);
+        float lux = pow(RL10 * 1e3 * pow(10, GAMMA) / resistance, (1 / GAMMA));
+        if(lux > 50){
+          display.invertDisplay(false);
+        }else{
+          display.invertDisplay(true);
+        }
+      }
+      if(selectedMenuItem == 1){
+        if(millis() - gameStartTime >= 10000){
+          Serial.print("Old Move Obstacle Miliseconds: ");
+          Serial.print(moveObstacleMiliseconds);
+          moveObstacleMiliseconds = (moveObstacleMiliseconds * 20) / 100;
+          Serial.print(", New Move Obstacle Miliseconds: ");
+          Serial.print(moveObstacleMiliseconds);
+          Serial.print('\n');
+          Serial.print("Old Untouchable Miliseconds: ");
+          Serial.print(untouchableMiliseconds);
+          untouchableMiliseconds = (untouchableMiliseconds * 20) / 100;
+          Serial.print(", New Untouchable Miliseconds: ");
+          Serial.print(untouchableMiliseconds);
+          Serial.print('\n');
+          gameStartTime = millis();
+        }
+      }
       if(isFirstAction){
         isFirstAction = false;
       }
-      delay(100);
+      delay(200);
     }
   }
 }
-
+// Menüyü OLED'e Çeker
 void menu(){
   display.clearDisplay();
   display.setTextSize(1);
@@ -156,12 +222,12 @@ void menu(){
     display.println("Hard");
   }
   display.display();
-  delay(100);
 }
-
+// Butondan aksiyon alınmasını bekler. Butondan aksiyon alınca aksiyon alınan butonu döner.
 byte takenAction(){
   while(true){
     for(byte i=0; i<3; i++){
+      sevseg.refreshDisplay();
       byte buttonPin = buttonPins[i];
       if(digitalRead(buttonPin) == LOW){
         return buttonPin;
@@ -170,17 +236,20 @@ byte takenAction(){
     delay(1);
   }
 }
-
+// Haritayı çizer
 void drawMap(){
   display.clearDisplay();
   for(uint8_t x=0; x<8; x++){
+    sevseg.refreshDisplay();
     display.drawLine(0, x*8, 128, x*8, WHITE);
   }
   for(uint8_t y=0; y <16; y++){
+    sevseg.refreshDisplay();
     display.drawLine(y*8, 0, y*8, 64, WHITE);
   }
   for(uint8_t i=0; i<8; i++){
     for(uint8_t j=0; j<16; j++){
+      sevseg.refreshDisplay();
       if(spaceMap[i][j] > 6){
         drawPlayer(i,j);
       }else if(spaceMap[i][j] == 5){
@@ -193,25 +262,25 @@ void drawMap(){
     }
   }
 }
-
+// Oyuncu objesini çizer
 void drawPlayer(int i, int j){
   int xMin = j*8;
   int yMin = i*8;
   display.fillTriangle(xMin, yMin + 4, xMin + 8, yMin, xMin + 8, yMin + 8, WHITE);
 }
-
+// Meteor objesini çizer
 void drawMeteor(int i, int j){
   int xMiddle = (j*8) + 4;
   int yMiddle = (i*8) + 4;
   display.fillCircle(xMiddle, yMiddle, 2, WHITE);
 }
-
+// Uzay Çöpünü çizer
 void drawSpaceTrash(int i, int j){
   int xMin = (j*8);
   int yMin = (i*8);
   display.fillRect(xMin, yMin, 8, 8, WHITE);
 }
-
+// Yıldız Çizer
 void drawStar(int i, int j){
   int xMin = j*8;
   int yMin = i*8;
@@ -220,7 +289,7 @@ void drawStar(int i, int j){
   display.setTextColor(BLACK);
   display.println("*");
 }
-
+// Varsayılan oyun değerlerini set eder.
 void setGameDefaults(){
   for(uint8_t i=0; i<8; i++){
     for(uint8_t j=0; j<16; j++){
@@ -236,13 +305,17 @@ void setGameDefaults(){
   spaceMap[0][15] = 9;
   isFirstAction = true;
   sevseg.setNumber(playerScore, 1);
-  sevseg.refreshDisplay();
+  moveObstacleMiliseconds = 1000;
+  untouchableMiliseconds = 3000;
+  ldrValue = analogRead(A0);
   gameTime = millis();
+  gameStartTime = gameTime;
 }
-
+// Rastgele engel/bonus oluşturur.
 void createRandomObstacle(){
   bool isFull = false;
   for(uint8_t i=0; i<8; i++){
+    sevseg.refreshDisplay();
     if(spaceMap[i][0] == 0){
       isFull = false;
       break;
@@ -253,6 +326,7 @@ void createRandomObstacle(){
   if(!isFull){
     randomObstaclePosition = random(0, 8);
     while(true){
+      sevseg.refreshDisplay();
       if(spaceMap[randomObstaclePosition][0] == 0){
         break;
       }else{
@@ -271,10 +345,11 @@ void createRandomObstacle(){
     }
   }
 }
-
+// Haritadaki objeleri ilerletir. Çarpma durumlarını hesaplar.
 void moveObstacles(){
   for(uint8_t i=0; i<8; i++){
     for(uint8_t j=15; j>=0 && j<16; j--){
+      sevseg.refreshDisplay();
       // Engel ve gemi değil ise
       if(spaceMap[i][j] > 0 && spaceMap[i][j] < 6){
         uint8_t newPosition = j+1;
@@ -286,6 +361,33 @@ void moveObstacles(){
         else{
           // Çarpacağı Obje Gemi mi kontrol et
           if(spaceMap[i][newPosition] > 6){
+            if(i == playerPosition && newPosition == 15){
+                // Çarpacak obje bonus ise canını arttır
+              if(spaceMap[i][j] == 5){
+                if(i == playerPosition){
+                  spaceMap[playerPosition][15] = spaceMap[playerPosition][15] + 1;
+                  spaceMap[i][j] = 0;
+                }
+              }
+              // Değil ise canını azalt ve 3 saniye dokunulmaz yap
+              else{
+                if(!isTakeDamage){
+                  if(i == playerPosition){
+                    isTakeDamage = true;
+                    damageTakenTime = millis();
+                    tone(BUZZER_PIN, 262, 250);
+                    if(spaceMap[i][newPosition] - 1 != 6){
+                      spaceMap[i][newPosition] = spaceMap[i][newPosition] - 1;
+                    }else{
+                      spaceMap[i][newPosition] = 6;
+                    }
+                    spaceMap[i][j] = 0;
+                  }
+                }else{
+                  spaceMap[i][j] = 0;
+                }
+              }
+            }
             // Çarpacak obje bonus ise canını arttır
             if(spaceMap[i][j] == 5){
               spaceMap[i][newPosition] = spaceMap[i][newPosition] + 1;
@@ -321,13 +423,14 @@ void moveObstacles(){
     }
   }
 }
-
+// Oyun bitti mi ? Kontrol et
 bool isGameOver(){
   return spaceMap[playerPosition][15] == 6;
 }
 
 void showRemainigGun(){
   for(uint8_t i=0; i<3; i++){
+    sevseg.refreshDisplay();
     if(i<remainingGun){
       digitalWrite(gunPins[i], HIGH);
     }else{
@@ -335,10 +438,24 @@ void showRemainigGun(){
     }
   }
 }
-// Potansiyometre 0 - 1023 arasında değer alır. Değeri 512'den büyükse aşağı in değilse yukarı çık.
+
+void showRemainingHealth(){
+  uint8_t playerHealth = spaceMap[playerPosition][15] - 6;
+  for(uint8_t i=0; i<3; i++){
+    sevseg.refreshDisplay();
+    if(i < playerHealth){
+      digitalWrite(healthPins[i], HIGH);
+    }else{
+      digitalWrite(healthPins[i], LOW);
+    }
+  }
+}
+
+// Potansiyelmetre 0 - 1023 arasında değer alır. Değeri 512'den büyükse aşağı in değilse yukarı çık.
 void movePlayer(){
   uint16_t newValue = analogRead(A3);
   if(newValue != currentMovementValue){
+    sevseg.refreshDisplay();
     currentMovementValue = newValue;
     if(newValue > 512){
       // Aşağıya İn
@@ -349,8 +466,7 @@ void movePlayer(){
         spaceMap[newPosition][15] = player;
         playerPosition = newPosition;
         playerScore = playerScore + 1;
-        sevseg.setNumber(playerScore, 1);
-        sevseg.refreshDisplay();
+        sevseg.setNumber(playerScore, 4);
       }
     }else{
       // Yukarıya Çık
@@ -361,16 +477,16 @@ void movePlayer(){
         spaceMap[newPosition][15] = player;
         playerPosition = newPosition;
         playerScore = playerScore + 1;
-        sevseg.setNumber(playerScore, 1);
-        sevseg.refreshDisplay();
+        sevseg.setNumber(playerScore, 4);
       }
     }
   }
 }
-
+// Ateş et. Objenin canını ayarla veya yoket.
 void shoot(){
   if(remainingGun > 0){
     for(uint8_t i = 14; i> -1 && i<15; i--){
+      sevseg.refreshDisplay();
         uint8_t target = spaceMap[playerPosition][i];
         if(target > 0){
           if(target == 5){
@@ -389,7 +505,7 @@ void shoot(){
     remainingGun = remainingGun - 1;
   }
 }
-
+// Oyun sonlanınca skorunu gösterir.
 void drawGameOver(){
   display.clearDisplay();
   display.setTextSize(1);
