@@ -28,9 +28,9 @@ byte remainingGun;
 byte playerPosition;
 bool isTakeDamage;
 bool isFirstAction;
-bool isInverted;
+//bool isInverted;
 /*
-Gemi -> >= 6 (6 + Toplam Canı)
+Gemi -> >= 6 (6 + Toplam Canı) -> 9 -> 6 Geminin Belirteci + 3 Can
 Bonus -> == 5
 Meteor -> >= 2 (2 + Toplam Canı)
 Uzay Çöpü -> == 1
@@ -39,18 +39,18 @@ uint8_t spaceMap[8][16] = {
   {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
   {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
   {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {0, 0, 0, 0, 0, 0, 0, 1, 5, 0, 0, 0, 0, 0, 0, 0},
   {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
   {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
   {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 };
 
-uint8_t randomObstaclePosition;
+uint8_t randomObstaclePosition; // 2^8
 uint8_t randomObstacleType;
 uint8_t randomObstacleCount;
 uint16_t currentMovementValue;
-bool shootButtonClicked;
+//bool shootButtonClicked;
 unsigned long gameTime;
 unsigned long damageTakenTime;
 uint8_t playerScore;
@@ -58,6 +58,8 @@ int ldrValue;
 double moveObstacleMiliseconds;
 double untouchableMiliseconds;
 unsigned long gameStartTime;
+uint8_t actionButtonLastValue;
+uint8_t actionButtonValue;
 
 void setup() {
   Serial.begin(115200);
@@ -95,7 +97,8 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   // LDR ayarlanıyor
   pinMode(LDR_PIN, INPUT);
-  isInverted = false;
+  //isInverted = false;
+  actionButtonLastValue = HIGH;
   delay(1000);
 }
 
@@ -115,11 +118,6 @@ void loop() {
     }
     delay(100);
   }else{
-    if(selectedMenuItem == 0){
-      Serial.println("Easy Mode");
-    }else{
-      Serial.println("Hard Mode");
-    }
     setGameDefaults();
     while(true){
       sevseg.refreshDisplay();
@@ -155,7 +153,8 @@ void loop() {
       }
       drawMap();
       display.display();
-      if(digitalRead(A2) == LOW && !isFirstAction){
+      actionButtonValue = digitalRead(A2);
+      if(actionButtonValue == LOW && actionButtonValue != actionButtonLastValue && !isFirstAction){
         shoot();
       }
       if(analogRead(A0) != ldrValue){
@@ -171,25 +170,15 @@ void loop() {
       }
       if(selectedMenuItem == 1){
         if(millis() - gameStartTime >= 10000){
-          Serial.print("Old Move Obstacle Miliseconds: ");
-          Serial.print(moveObstacleMiliseconds);
           moveObstacleMiliseconds = (moveObstacleMiliseconds * 20) / 100;
-          Serial.print(", New Move Obstacle Miliseconds: ");
-          Serial.print(moveObstacleMiliseconds);
-          Serial.print('\n');
-          Serial.print("Old Untouchable Miliseconds: ");
-          Serial.print(untouchableMiliseconds);
           untouchableMiliseconds = (untouchableMiliseconds * 20) / 100;
-          Serial.print(", New Untouchable Miliseconds: ");
-          Serial.print(untouchableMiliseconds);
-          Serial.print('\n');
           gameStartTime = millis();
         }
       }
       if(isFirstAction){
         isFirstAction = false;
       }
-      delay(200);
+      actionButtonLastValue = actionButtonValue;
     }
   }
 }
@@ -239,14 +228,6 @@ byte takenAction(){
 // Haritayı çizer
 void drawMap(){
   display.clearDisplay();
-  for(uint8_t x=0; x<8; x++){
-    sevseg.refreshDisplay();
-    display.drawLine(0, x*8, 128, x*8, WHITE);
-  }
-  for(uint8_t y=0; y <16; y++){
-    sevseg.refreshDisplay();
-    display.drawLine(y*8, 0, y*8, 64, WHITE);
-  }
   for(uint8_t i=0; i<8; i++){
     for(uint8_t j=0; j<16; j++){
       sevseg.refreshDisplay();
@@ -360,56 +341,29 @@ void moveObstacles(){
         // Haritanın Dışına Çıkmıyor ise
         else{
           // Çarpacağı Obje Gemi mi kontrol et
-          if(spaceMap[i][newPosition] > 6){
-            if(i == playerPosition && newPosition == 15){
-                // Çarpacak obje bonus ise canını arttır
+          if(i == playerPosition && newPosition == 15){
+              // Çarpacak obje bonus ise canını arttır
               if(spaceMap[i][j] == 5){
-                if(i == playerPosition){
-                  spaceMap[playerPosition][15] = spaceMap[playerPosition][15] + 1;
-                  spaceMap[i][j] = 0;
-                }
+                spaceMap[playerPosition][15] = spaceMap[playerPosition][15] + 1;
+                spaceMap[i][j] = 0;
               }
               // Değil ise canını azalt ve 3 saniye dokunulmaz yap
               else{
                 if(!isTakeDamage){
-                  if(i == playerPosition){
-                    isTakeDamage = true;
-                    damageTakenTime = millis();
-                    tone(BUZZER_PIN, 262, 250);
-                    if(spaceMap[i][newPosition] - 1 != 6){
-                      spaceMap[i][newPosition] = spaceMap[i][newPosition] - 1;
-                    }else{
-                      spaceMap[i][newPosition] = 6;
-                    }
-                    spaceMap[i][j] = 0;
+                  isTakeDamage = true;
+                  damageTakenTime = millis();
+                  tone(BUZZER_PIN, 262, 250);
+                  uint8_t newHealth = spaceMap[playerPosition][15] - 1;
+                  if(newHealth != 6){
+                      spaceMap[playerPosition][15] = newHealth;
+                  }else{
+                      spaceMap[playerPosition][15] = 6;
                   }
+                  spaceMap[i][j] = 0;
                 }else{
                   spaceMap[i][j] = 0;
                 }
               }
-            }
-            // Çarpacak obje bonus ise canını arttır
-            if(spaceMap[i][j] == 5){
-              spaceMap[i][newPosition] = spaceMap[i][newPosition] + 1;
-              spaceMap[i][j] = 0;
-            }
-            // Değil ise canını azalt ve 3 saniye dokunulmaz yap
-            else{
-              if(!isTakeDamage){
-                isTakeDamage = true;
-                damageTakenTime = millis();
-                tone(BUZZER_PIN, 262, 250);
-                if(spaceMap[i][newPosition] - 1 != 6){
-                  spaceMap[i][newPosition] = spaceMap[i][newPosition] - 1;
-                }else{
-                  spaceMap[i][newPosition] = 6;
-                }
-                spaceMap[i][j] = 0;
-              }else{
-                spaceMap[i][j] = 0;
-              }
-            }
-            
           }
           // Bir adım ilerlet
           else{
@@ -487,21 +441,21 @@ void shoot(){
   if(remainingGun > 0){
     for(uint8_t i = 14; i> -1 && i<15; i--){
       sevseg.refreshDisplay();
-        uint8_t target = spaceMap[playerPosition][i];
-        if(target > 0){
-          if(target == 5){
-            spaceMap[playerPosition][i] = 0;
-            break;
-          }else if(target == 1){
-            spaceMap[playerPosition][i] = 0;
-            break;
-          }else if(target > 2 && target < 5){
-            uint8_t newHealth = target - 1;
-            spaceMap[playerPosition][i] = newHealth == 2 ? 0 : newHealth;
-            break;
-          }
+      uint8_t target = spaceMap[playerPosition][i];
+      if(target > 0){
+        if(target == 5){
+          spaceMap[playerPosition][i] = 0;
+          break;
+        }else if(target == 1){
+          spaceMap[playerPosition][i] = 0;
+          break;
+        }else if(target > 2 && target < 5){
+          uint8_t newHealth = target - 1;
+          spaceMap[playerPosition][i] = newHealth == 2 ? 0 : newHealth;
+          break;
         }
       }
+    }
     remainingGun = remainingGun - 1;
   }
 }
